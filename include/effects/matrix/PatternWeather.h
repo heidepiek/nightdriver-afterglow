@@ -670,17 +670,30 @@ public:
                 g()->print(name);
             }
             else
-            {
-                // Advance scroll by one character every 12 frames (~2x per second)
-                if (_animFrame % 12 == 0)
-                    _scrollPos = (_scrollPos + 1) % ((int)name.length() + 4);
-                String padded = name + "    ";           // trailing gap before loop-back
-                String sub = "";
-                int pLen = (int)padded.length();
-                for (int i = 0; i < maxCityChars; i++)
-                    sub += padded[(_scrollPos + i) % pLen];
-                g()->print(sub);
-            }
+{
+    // Pixel scroll: naam schuift volledig van rechts naar links
+    if (_scrollPos <= -(int16_t)(name.length() * fontWidth))
+        _scrollPos = MATRIX_WIDTH;
+    else if (_animFrame % 4 == 0)
+        _scrollPos--;
+
+    int16_t maxX = MATRIX_WIDTH - tempReserve;
+    int16_t curX = _scrollPos;
+
+    for (int i = 0; i < (int)name.length(); i++)
+    {
+        if (curX >= 0 && curX < maxX)
+        {
+            g()->setCursor(curX, fontHeight);
+            g()->print(name[i]);
+        }
+
+        curX += fontWidth;
+
+        if (curX >= maxX)
+            break;
+    }
+}
 
             // Current temperature - right-justified, color-coded
             if (dataReady)
