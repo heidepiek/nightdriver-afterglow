@@ -4,7 +4,15 @@ import os
 import sys
 import re
 import shutil
+import stat
 import subprocess
+
+def _remove_readonly(func, path, exc_info):
+    # Op Windows staan gedownloade bestanden soms als alleen-lezen gemarkeerd,
+    # waardoor shutil.rmtree stilletjes faalt. Dit maakt het pad schrijfbaar
+    # en probeert de verwijdering opnieuw.
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
 
 # Find PlatformIO executable in various standard locations
 def find_platformio_bin():
@@ -179,7 +187,7 @@ try:
             if os.path.exists(lib_path):
                 print(f"[Shared-Libs] Upgrading/Reinstalling shared dependency: {lib}...", file=sys.stderr)
                 try:
-                    shutil.rmtree(lib_path)
+                    shutil.rmtree(lib_path, onerror=_remove_readonly)
                 except Exception as e:
                     print(f"[Shared-Libs] Warning: failed to clean up directory {lib_path}: {e}", file=sys.stderr)
             else:
@@ -199,7 +207,7 @@ try:
                 # Rename if expected_path != lib_path (spaces to underscores)
                 if expected_path != lib_path and os.path.exists(expected_path):
                     if os.path.exists(lib_path):
-                        shutil.rmtree(lib_path)
+                        shutil.rmtree(lib_path, onerror=_remove_readonly)
                     os.rename(expected_path, lib_path)
 
                 # Write version file
@@ -209,10 +217,9 @@ try:
             except Exception as e:
                 print(f"[Shared-Libs] Error: failed to install dependency {lib}: {e}", file=sys.stderr)
                 if os.path.exists(lib_path):
-                    shutil.rmtree(lib_path, ignore_errors=True)
+                    shutil.rmtree(lib_path, onerror=_remove_readonly, ignore_errors=True)
                 if expected_path != lib_path and os.path.exists(expected_path):
-                    shutil.rmtree(expected_path, ignore_errors=True)
+                    shutil.rmtree(expected_path, onerror=_remove_readonly, ignore_errors=True)
                 sys.exit(1)
 finally:
     release_lock(lock_fd, lock_path)
-
