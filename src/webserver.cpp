@@ -53,6 +53,29 @@
 
 // Static member initializers
 
+namespace
+{
+    String EscapeHtml(const String& input)
+    {
+        String escaped;
+        escaped.reserve(input.length());
+        for (size_t i = 0; i < input.length(); ++i)
+        {
+            char c = input[i];
+            switch (c)
+            {
+                case '&':  escaped += "&amp;";  break;
+                case '<':  escaped += "&lt;";   break;
+                case '>':  escaped += "&gt;";   break;
+                case '"':  escaped += "&quot;"; break;
+                case '\'': escaped += "&#39;";  break;
+                default:   escaped += c;        break;
+            }
+        }
+        return escaped;
+    }
+}
+
 #if ENABLE_WIFI
 const char captivePortalHtml[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML>
@@ -277,7 +300,7 @@ std::vector<std::reference_wrapper<SettingSpec>> CWebServer::deviceSettingSpecs{
 template<>
 bool CWebServer::PushPostParamIfPresent<bool>(const AsyncWebServerRequest * pRequest, const String &paramName, ValueSetter<bool> setter)
 {
-    return PushPostParamIfPresent<bool>(pRequest, paramName, std::move(setter), [](const AsyncWebParameter * param) constexpr
+    return PushPostParamIfPresent<bool>(pRequest, paramName, std::move(setter), [](const AsyncWebParameter * param)
     {
         return BoolFromText(param->value());
     });
@@ -287,7 +310,7 @@ bool CWebServer::PushPostParamIfPresent<bool>(const AsyncWebServerRequest * pReq
 template<>
 bool CWebServer::PushPostParamIfPresent<size_t>(const AsyncWebServerRequest * pRequest, const String &paramName, ValueSetter<size_t> setter)
 {
-    return PushPostParamIfPresent<size_t>(pRequest, paramName, std::move(setter), [](const AsyncWebParameter * param) constexpr
+    return PushPostParamIfPresent<size_t>(pRequest, paramName, std::move(setter), [](const AsyncWebParameter * param)
     {
         return strtoul(param->value().c_str(), nullptr, 10);
     });
@@ -297,9 +320,9 @@ bool CWebServer::PushPostParamIfPresent<size_t>(const AsyncWebServerRequest * pR
 template<>
 bool CWebServer::PushPostParamIfPresent<int>(const AsyncWebServerRequest * pRequest, const String &paramName, ValueSetter<int> setter)
 {
-    return PushPostParamIfPresent<int>(pRequest, paramName, std::move(setter), [](const AsyncWebParameter * param) constexpr
+    return PushPostParamIfPresent<int>(pRequest, paramName, std::move(setter), [](const AsyncWebParameter * param)
     {
-        return std::stoi(param->value().c_str());
+        return static_cast<int>(strtol(param->value().c_str(), nullptr, 10));
     });
 }
 
@@ -307,7 +330,7 @@ bool CWebServer::PushPostParamIfPresent<int>(const AsyncWebServerRequest * pRequ
 template<>
 bool CWebServer::PushPostParamIfPresent<CRGB>(const AsyncWebServerRequest * pRequest, const String &paramName, ValueSetter<CRGB> setter)
 {
-    return PushPostParamIfPresent<CRGB>(pRequest, paramName, std::move(setter), [](const AsyncWebParameter * param) constexpr
+    return PushPostParamIfPresent<CRGB>(pRequest, paramName, std::move(setter), [](const AsyncWebParameter * param)
     {
         return CRGB(strtoul(param->value().c_str(), nullptr, 10));
     });
@@ -324,28 +347,8 @@ void CWebServer::AddCORSHeaderAndSendResponse<AsyncJsonResponse>(AsyncWebServerR
 // Member function implementations
 
 // begin - register page load handlers and start serving pages
-void CWebServer::SetupStationMode()
-
+void CWebServer::RegisterSystemEndpoints()
 {
-    [[maybe_unused]] extern const uint8_t html_start[] asm("_binary_site_dist_index_html_gz_start");
-    [[maybe_unused]] extern const uint8_t html_end[] asm("_binary_site_dist_index_html_gz_end");
-    [[maybe_unused]] extern const uint8_t js_start[] asm("_binary_site_dist_index_js_gz_start");
-    [[maybe_unused]] extern const uint8_t js_end[] asm("_binary_site_dist_index_js_gz_end");
-    [[maybe_unused]] extern const uint8_t ico_start[] asm("_binary_site_dist_favicon_ico_gz_start");
-    [[maybe_unused]] extern const uint8_t ico_end[] asm("_binary_site_dist_favicon_ico_gz_end");
-    [[maybe_unused]] extern const uint8_t timezones_start[] asm("_binary_config_timezones_json_start");
-    [[maybe_unused]] extern const uint8_t timezones_end[] asm("_binary_config_timezones_json_end");
-
-    EmbeddedWebFile html_file(html_start, html_end, "text/html", "gzip");
-    EmbeddedWebFile js_file(js_start, js_end, "application/javascript", "gzip");
-    EmbeddedWebFile ico_file(ico_start, ico_end, "image/vnd.microsoft.icon", "gzip");
-    EmbeddedWebFile timezones_file(timezones_start, timezones_end - 1, "text/json"); // end - 1 because of zero-termination
-
-    debugI("Embedded html file size: %zu", (size_t)html_file.length);
-    debugI("Embedded jsx file size: %zu", (size_t)js_file.length);
-    debugI("Embedded ico file size: %zu", (size_t)ico_file.length);
-    debugI("Embedded timezones file size: %zu", (size_t)timezones_file.length);
-
     _staticStats.HeapSize = ESP.getHeapSize();
     _staticStats.DmaHeapSize = heap_caps_get_total_size(MALLOC_CAP_DMA);
     _staticStats.PsramSize = ESP.getPsramSize();
@@ -356,17 +359,13 @@ void CWebServer::SetupStationMode()
     _staticStats.FreeSketchSpace = 0; // ESP.getFreeSketchSpace();
     _staticStats.FlashChipSize = ESP.getFlashChipSize();
 
-    debugI("Connecting Web Endpoints");
-
     // UserFS file requests
-
     _server.on("/effectsConfig",         HTTP_GET,  [](AsyncWebServerRequest* pRequest) { pRequest->send(UserFS, EFFECTS_CONFIG_FILE,   "text/json"); });
     #if ENABLE_IMPROV_LOGGING
         _server.on(IMPROV_LOG_FILE,      HTTP_GET,  [](AsyncWebServerRequest* pRequest) { pRequest->send(UserFS, IMPROV_LOG_FILE,       "text/plain"); });
     #endif
 
     // Instance handler requests
-
     _server.on("/statistics/static",     HTTP_GET,  [this](AsyncWebServerRequest* pRequest)
                                                     { this->GetStatistics(pRequest, StatisticsType::Static); });
     _server.on("/statistics/dynamic",    HTTP_GET,  [this](AsyncWebServerRequest* pRequest)
@@ -402,33 +401,68 @@ void CWebServer::SetupStationMode()
             request->send(404, "text/plain", "Coredump partition not found");
         }
     });
+}
 
-    // Static handler requests
+void CWebServer::RegisterApiEndpoints()
+{
+    struct ApiRoute {
+        const char* path;
+        WebRequestMethodComposite method;
+        ArRequestHandlerFunction handler;
+    };
 
-    _server.on("/effects",               HTTP_GET,  GetEffectListText);
-    _server.on("/getEffectList",         HTTP_GET,  GetEffectListText);
-    _server.on("/nextEffect",            HTTP_POST, NextEffect);
-    _server.on("/previousEffect",        HTTP_POST, PreviousEffect);
+    const std::array<ApiRoute, 19> routes {{
+        {"/effects",               HTTP_GET,  GetEffectListText},
+        {"/getEffectList",         HTTP_GET,  GetEffectListText},
+        {"/nextEffect",            HTTP_POST, NextEffect},
+        {"/previousEffect",        HTTP_POST, PreviousEffect},
 
-    _server.on("/currentEffect",         HTTP_POST, SetCurrentEffectIndex);
-    _server.on("/setCurrentEffectIndex", HTTP_POST, SetCurrentEffectIndex);
-    _server.on("/enableEffect",          HTTP_POST, EnableEffect);
-    _server.on("/disableEffect",         HTTP_POST, DisableEffect);
-    _server.on("/moveEffect",            HTTP_POST, MoveEffect);
-    _server.on("/copyEffect",            HTTP_POST, CopyEffect);
-    _server.on("/deleteEffect",          HTTP_POST, DeleteEffect);
+        {"/currentEffect",         HTTP_POST, SetCurrentEffectIndex},
+        {"/setCurrentEffectIndex", HTTP_POST, SetCurrentEffectIndex},
+        {"/enableEffect",          HTTP_POST, EnableEffect},
+        {"/disableEffect",         HTTP_POST, DisableEffect},
+        {"/moveEffect",            HTTP_POST, MoveEffect},
+        {"/copyEffect",            HTTP_POST, CopyEffect},
+        {"/deleteEffect",          HTTP_POST, DeleteEffect},
 
-    _server.on("/settings/effect/specs", HTTP_GET,  GetEffectSettingSpecs);
-    _server.on("/settings/effect",       HTTP_GET,  GetEffectSettings);
-    _server.on("/settings/effect",       HTTP_POST, SetEffectSettings);
-    _server.on("/settings/validated",    HTTP_POST, ValidateAndSetSetting);
-    _server.on("/settings/specs",        HTTP_GET,  GetSettingSpecs);
-    _server.on("/settings",              HTTP_GET,  GetSettings);
-    _server.on("/settings",              HTTP_POST, SetSettings);
+        {"/settings/effect/specs", HTTP_GET,  GetEffectSettingSpecs},
+        {"/settings/effect",       HTTP_GET,  GetEffectSettings},
+        {"/settings/effect",       HTTP_POST, SetEffectSettings},
+        {"/settings/validated",    HTTP_POST, ValidateAndSetSetting},
+        {"/settings/specs",        HTTP_GET,  GetSettingSpecs},
+        {"/settings",              HTTP_GET,  GetSettings},
+        {"/settings",              HTTP_POST, SetSettings},
 
-    _server.on("/reset",                 HTTP_POST, Reset);
+        {"/reset",                 HTTP_POST, Reset}
+    }};
 
-    // Embedded file requests
+    for (const auto& route : routes) {
+        if (route.path != nullptr) {
+            _server.on(route.path, route.method, route.handler);
+        }
+    }
+}
+
+void CWebServer::RegisterWebUiEndpoints()
+{
+    [[maybe_unused]] extern const uint8_t html_start[] asm("_binary_site_dist_index_html_gz_start");
+    [[maybe_unused]] extern const uint8_t html_end[] asm("_binary_site_dist_index_html_gz_end");
+    [[maybe_unused]] extern const uint8_t js_start[] asm("_binary_site_dist_index_js_gz_start");
+    [[maybe_unused]] extern const uint8_t js_end[] asm("_binary_site_dist_index_js_gz_end");
+    [[maybe_unused]] extern const uint8_t ico_start[] asm("_binary_site_dist_favicon_ico_gz_start");
+    [[maybe_unused]] extern const uint8_t ico_end[] asm("_binary_site_dist_favicon_ico_gz_end");
+    [[maybe_unused]] extern const uint8_t timezones_start[] asm("_binary_config_timezones_json_start");
+    [[maybe_unused]] extern const uint8_t timezones_end[] asm("_binary_config_timezones_json_end");
+
+    static EmbeddedWebFile html_file(html_start, html_end, "text/html", "gzip");
+    static EmbeddedWebFile js_file(js_start, js_end, "application/javascript", "gzip");
+    static EmbeddedWebFile ico_file(ico_start, ico_end, "image/vnd.microsoft.icon", "gzip");
+    static EmbeddedWebFile timezones_file(timezones_start, timezones_end - 1, "text/json"); // end - 1 because of zero-termination
+
+    debugI("Embedded html file size: %zu", (size_t)html_file.length);
+    debugI("Embedded jsx file size: %zu", (size_t)js_file.length);
+    debugI("Embedded ico file size: %zu", (size_t)ico_file.length);
+    debugI("Embedded timezones file size: %zu", (size_t)timezones_file.length);
 
     ServeEmbeddedFile("/timezones.json", timezones_file);
 
@@ -440,9 +474,17 @@ void CWebServer::SetupStationMode()
         ServeEmbeddedFile("/index.js", js_file);
         ServeEmbeddedFile("/favicon.ico", ico_file);
     #endif
+}
+
+void CWebServer::SetupStationMode()
+{
+    debugI("Connecting Web Endpoints");
+
+    RegisterSystemEndpoints();
+    RegisterApiEndpoints();
+    RegisterWebUiEndpoints();
 
     // Not found handler
-
     _server.onNotFound([](AsyncWebServerRequest *request)
     {
         if (request->method() == HTTP_OPTIONS) {
@@ -650,8 +692,10 @@ void CWebServer::HandleWifiSave(AsyncWebServerRequest *request)
             response->print(F("<html><head><title>Rebooting...</title>"));
             response->print(F("</head><body style=\"font-family: sans-serif;\">"));
             response->print(F("<h1>Credentials Saved. Rebooting...</h1>"));
-            response->printf(PSTR("<p>Your device is now rebooting and will attempt to connect to the <b>%s</b> network.</p>"), ssid.c_str());
-            response->printf(PSTR("<p>Please reconnect your client device (phone/computer) to the <b>%s</b> network.</p>"), ssid.c_str());
+
+            String safeSsid = EscapeHtml(ssid);
+            response->printf(PSTR("<p>Your device is now rebooting and will attempt to connect to the <b>%s</b> network.</p>"), safeSsid.c_str());
+            response->printf(PSTR("<p>Please reconnect your client device (phone/computer) to the <b>%s</b> network.</p>"), safeSsid.c_str());
             response->print(F("<p>Check your router's connected devices list to find the IP address of your NightDriver device.</p>"));
             response->print(F("</body></html>"));
 
@@ -757,8 +801,6 @@ void CWebServer::GetEffectListText(AsyncWebServerRequest * pRequest)
 
 void CWebServer::GetStatistics(AsyncWebServerRequest * pRequest, StatisticsType statsType) const
 {
-//    debugV("GetStatistics");
-
     auto response = std::make_unique<AsyncJsonResponse>();
     auto& j = response->getRoot();
 
@@ -977,8 +1019,6 @@ void CWebServer::GetSettingSpecs(AsyncWebServerRequest * pRequest)
 // Responds with current config, excluding any sensitive values
 void CWebServer::GetSettings(AsyncWebServerRequest * pRequest)
 {
-//    debugV("GetSettings");
-
     auto response = std::make_unique<AsyncJsonResponse>();
     response->addHeader("Server", "NightDriverStrip");
     auto root = response->getRoot();

@@ -147,6 +147,8 @@ class PatternWeather : public EffectWithId<PatternWeather>
     int    dayOfWeek          = 0;
     String iconToday          = "";
     String iconTomorrow       = "";
+    const EmbeddedFile* iconTodayFile    = nullptr;
+    const EmbeddedFile* iconTomorrowFile = nullptr;
     float  temperature        = 0.0f;
     float  highToday          = 0.0f;
     float  loToday            = 0.0f;
@@ -316,6 +318,7 @@ class PatternWeather : public EffectWithId<PatternWeather>
             int slot = 0;
 
             iconTomorrow = "";
+            iconTomorrowFile = nullptr;
 
             // Look for the temperature data for tomorrow
             for (size_t i = 0; i < list.size(); ++i)
@@ -345,7 +348,11 @@ class PatternWeather : public EffectWithId<PatternWeather>
 
                     // Use the noon slot for the icon
                     if (slot == 4)
+                    {
                         iconTomorrow = entry["weather"][0]["icon"].as<String>();
+                        auto dictEntry = GetWeatherIcons().find(iconTomorrow);
+                        iconTomorrowFile = (dictEntry != GetWeatherIcons().end()) ? &dictEntry->second : nullptr;
+                    }
                 }
             }
 
@@ -384,6 +391,7 @@ class PatternWeather : public EffectWithId<PatternWeather>
         if (httpResponseCode > 0)
         {
             iconToday = "";
+            iconTodayFile = nullptr;
             auto jsonDoc = CreateJsonDocument();
             deserializeJson(jsonDoc, http.getString());
 
@@ -396,6 +404,8 @@ class PatternWeather : public EffectWithId<PatternWeather>
             loToday     = KelvinToLocal(jsonDoc["main"]["temp_min"]);
 
             iconToday = jsonDoc["weather"][0]["icon"].as<String>();
+            auto dictEntry = GetWeatherIcons().find(iconToday);
+            iconTodayFile = (dictEntry != GetWeatherIcons().end()) ? &dictEntry->second : nullptr;
             debugI("Got today's temps: Now %d Lo %d, Hi %d, Icon %s", (int)temperature, (int)loToday, (int)highToday, iconToday.c_str());
 
             const char * pszName = jsonDoc["name"];
@@ -626,103 +636,38 @@ public:
             g_ptrSystem->GetNetworkReader().FlagReader(readerIndex);
         }
 
-        // Clear
-        g()->fillScreen(BLACK16);
-
-        // Animated gradient header bar (rows 0-8):
-        // Slow blue-to-indigo gradient that breathes in brightness
-        uint8_t pulse = beatsin8(12, 55, 130);
-        for (int x = 0; x < MATRIX_WIDTH; x++)
-        {
-            uint8_t t  = (uint8_t)((x * 255) / (MATRIX_WIDTH - 1));
-            uint8_t bv = lerp8by8(pulse, pulse / 2, t);    // blue: bright left -> dim right
-            uint8_t rv = lerp8by8(0,     pulse / 5, t);    // slight red tint on right -> indigo
-            uint8_t gv = lerp8by8(0,     pulse / 9, t);
-            CRGB hc = CRGB(rv, gv, bv);
-            for (int y = 0; y <= 8; y++)
-                g()->leds[XY(x, y)] = hc;
-        }
-
-        g()->setFont(&Apple5x7);
-
-        // City name (truncated or scrolling)
-        bool noKey = g_ptrSystem->GetDeviceConfig().GetOpenWeatherAPIKey().isEmpty();
-        if (noKey)
-        {
-            g()->setTextColor(g()->to16bit(CRGB(255, 80, 0)));
-            g()->setCursor(1, fontHeight);
-            g()->print("NO API KEY");
-        }
-        else
-        {
-            // Reserve right-side pixels for current temperature (up to "-20" = 3 chars)
-            const int tempReserve = 4 * fontWidth + 2;                 // 22 px
-            const int maxCityChars = (MATRIX_WIDTH - tempReserve - 2) / fontWidth;  // ~ 8
-
-            String name = strLocationName.isEmpty() ? strLocation : strLocationName;
-            name.toUpperCase();
-
-            g()->setTextColor(WHITE16);
-            g()->setCursor(1, fontHeight);
-
-            if ((int)name.length() <= maxCityChars)
-            {
-                g()->print(name);
-            }
-            else
-{
-    // Pixel scroll: naam schuift volledig van rechts naar links
-    if (_scrollPos <= -(int16_t)(name.length() * fontWidth))
-        _scrollPos = MATRIX_WIDTH;
-    else if (_animFrame % 4 == 0)
-        _scrollPos--;
-
-    int16_t maxX = MATRIX_WIDTH - tempReserve;
-    int16_t curX = _scrollPos;
-
-    for (int i = 0; i < (int)name.length(); i++)
-    {
-        if (curX >= 0 && curX < maxX)
-        {
-            g()->setCursor(curX, fontHeight);
-            g()->print(name[i]);
-        }
-
-        curX += fontWidth;
-
-        if (curX >= maxX)
-            break;
-    }
-}
-
-            // Current temperature - right-justified, color-coded
-            if (dataReady)
-            {
-                String strTemp = String((int)temperature);
-                int tx = MATRIX_WIDTH - fontWidth * (int)strTemp.length() - 1;
-                g()->setCursor(tx, fontHeight);
-                g()->setTextColor(g()->to16bit(tempToColor(temperature)));
-                g()->print(strTemp);
-            }
-        }
-
-        // Gradient separator line (row 9)
-        g()->drawLine(0, 9, MATRIX_WIDTH - 1, 9, CRGB(0, 20, 200));
-
         // Weather icons
-        auto iconEntry = GetWeatherIcons().find(iconToday);
-        if (iconEntry != GetWeatherIcons().end())
+        const auto iconEntry = GetWeatherIcons().find(iconToday);
+        if (iconTodayFile)
         {
-            auto icon = iconEntry->second;
+            if (JDR_OK != TJpgDec.drawJpg(0, 10, iconTodayFile->contents, iconTodayFile->length))
+                debugW("Could not display icon %s", iconToday.c_str());
+        }
+        else if (iconEntry != GetWeatherIcons().end())
+        {
+            const auto &icon = iconEntry->second;
             if (JDR_OK != TJpgDec.drawJpg(0, 10, icon.contents, icon.length))
                 debugW("Could not display icon %s", iconToday.c_str());
         }
 
-        iconEntry = GetWeatherIcons().find(iconTomorrow);
-        if (iconEntry != GetWeatherIcons().end())
+                debugW("Could not display icon %s", iconToday.c_str());
+        }
+
+        if (iconTomorrowFile)
         {
-            auto icon = iconEntry->second;
+        const auto iconTomorrowEntry = GetWeatherIcons().find(iconTomorrow);
+        if (iconTomorrowFile)
+        {
+            if (JDR_OK != TJpgDec.drawJpg(xHalf + 1, 10, iconTomorrowFile->contents, iconTomorrowFile->length))
+                debugW("Could not display icon %s", iconTomorrow.c_str());
+        }
+        else if (iconTomorrowEntry != GetWeatherIcons().end())
+        {
+            const auto &icon = iconTomorrowEntry->second;
             if (JDR_OK != TJpgDec.drawJpg(xHalf + 1, 10, icon.contents, icon.length))
+                debugW("Could not display icon %s", iconTomorrow.c_str());
+        }
+
                 debugW("Could not display icon %s", iconTomorrow.c_str());
         }
 

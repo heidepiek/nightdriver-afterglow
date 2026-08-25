@@ -135,6 +135,10 @@ class CWebServer
     void SetupStationMode();
     void SetupCaptivePortalMode();
 
+    void RegisterSystemEndpoints();
+    void RegisterApiEndpoints();
+    void RegisterWebUiEndpoints();
+
 
     // Helper functions/templates
 
@@ -156,7 +160,7 @@ class CWebServer
     template<typename Tv>
     static bool PushPostParamIfPresent(const AsyncWebServerRequest * pRequest, const String & paramName, ValueSetter<Tv> setter)
     {
-        return PushPostParamIfPresent<Tv>(pRequest, paramName, setter, [](const AsyncWebParameter * param) { return param->value(); });
+        return PushPostParamIfPresent<Tv>(pRequest, paramName, std::move(setter), [](const AsyncWebParameter * param) { return param->value(); });
     }
 
     // AddCORSHeaderAndSend(OK)Response

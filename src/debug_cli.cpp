@@ -89,48 +89,33 @@ void RecordPanicMessage(const char* message)
 static std::vector<std::string_view> Tokenize(std::string_view input)
 {
     std::vector<std::string_view> output;
-    size_t start = 0;
-    bool in_quotes = false;
+    constexpr std::string_view whitespace = " \t\r\n\f\v";
 
-    const size_t input_len = input.length();
-    for (size_t i = 0; i < input_len; ++i)
+    while (true)
     {
-        char c = input[i];
+        size_t start = input.find_first_not_of(whitespace);
+        if (start == std::string_view::npos)
+            break;
 
-        if (in_quotes)
-        {
-            if (c == '"')
-            {
-                size_t len = i - start;
-                output.push_back(input.substr(start, len));
-                in_quotes = false;
-                start = i + 1;
-            }
-            continue;
-        }
+        input.remove_prefix(start);
 
-        if (std::isspace(c))
+        if (input.front() == '"')
         {
-            if (i > start)
-            {
-                output.push_back(input.substr(start, i - start));
-            }
-            start = i + 1;
+            input.remove_prefix(1);
+            size_t end = input.find('"');
+            output.push_back(input.substr(0, end));
+            if (end == std::string_view::npos)
+                break;
+            input.remove_prefix(end + 1);
         }
-        else if (c == '"')
+        else
         {
-            if (i > start)
-            {
-                output.push_back(input.substr(start, i - start));
-            }
-            start = i + 1;
-            in_quotes = true;
+            size_t end = input.find_first_of(" \t\r\n\f\v\"");
+            output.push_back(input.substr(0, end));
+            if (end == std::string_view::npos)
+                break;
+            input.remove_prefix(end);
         }
-    }
-
-    if (start < input.length())
-    {
-        output.push_back(input.substr(start));
     }
 
     return output;
@@ -196,31 +181,28 @@ static void PrintHelp(const cli_argv &argv)
     if (argv.size() > 1)
     {
         std::string_view target = argv[1];
-        const command *match = nullptr;
-        int matches = 0;
 
-        for (const auto *cmd : g_CommandTable)
-        {
-            if (StringCompareInsensitive(target, cmd->command))
-            {
-                match = cmd;
-                matches = 1;
-                break;
-            }
-            if (StringStartsWithInsensitive(cmd->command, target))
-            {
-                match = cmd;
-                matches++;
-            }
-        }
+        auto exact_it = std::find_if(g_CommandTable.begin(), g_CommandTable.end(),
+                                     [target](const command *cmd) { return StringCompareInsensitive(target, cmd->command); });
 
-        if (matches == 1 && match)
+        if (exact_it != g_CommandTable.end())
         {
-            cli_printf("%-20s %s\n", match->command, match->help);
+            cli_printf("%-20s %s\n", (*exact_it)->command, (*exact_it)->help);
         }
         else
         {
-            cli_printf("Command '%.*s' not found or ambiguous.\n", (int)target.length(), target.data());
+            auto is_prefix_match = [target](const command *cmd) { return StringStartsWithInsensitive(cmd->command, target); };
+            int matches = std::count_if(g_CommandTable.begin(), g_CommandTable.end(), is_prefix_match);
+
+            if (matches == 1)
+            {
+                auto prefix_it = std::find_if(g_CommandTable.begin(), g_CommandTable.end(), is_prefix_match);
+                cli_printf("%-20s %s\n", (*prefix_it)->command, (*prefix_it)->help);
+            }
+            else
+            {
+                cli_printf("Command '%.*s' not found or ambiguous.\n", (int)target.length(), target.data());
+            }
         }
     }
     else
@@ -294,37 +276,34 @@ std::string_view TabComplete(std::string_view partial, std::string_view full_lin
     {
         std::string_view match = "";
         int matches = 0;
+        size_t common_len = 0;
 
         for (const auto *cmd : g_CommandTable)
         {
-            if (StringStartsWithInsensitive(cmd->command, partial))
+            std::string_view cmd_view{cmd->command};
+            if (StringStartsWithInsensitive(cmd_view, partial))
             {
-                match = cmd->command;
+                if (matches == 0)
+                {
+                    match = cmd_view;
+                    common_len = match.length();
+                }
+                else
+                {
+                    size_t j = partial.length();
+                    size_t max_len = std::min(common_len, cmd_view.length());
+                    while (j < max_len && tolower(match[j]) == tolower(cmd_view[j]))
+                    {
+                        j++;
+                    }
+                    common_len = j;
+                }
                 matches++;
             }
         }
 
-        if (matches == 1)
-            return match.substr(partial.length());
-
-        if (matches > 1)
-        {
-            // Calculate longest common prefix among all matching commands
-            size_t common_len = match.length();
-            for (const auto *cmd : g_CommandTable)
-            {
-                if (StringStartsWithInsensitive(cmd->command, partial))
-                {
-                    size_t j = partial.length();
-                    while (j < common_len && j < strlen(cmd->command) &&
-                           tolower(match[j]) == tolower(cmd->command[j]))
-                        j++;
-                    common_len = j;
-                }
-            }
-            if (common_len > partial.length())
-                return match.substr(partial.length(), common_len - partial.length());
-        }
+        if (matches > 0 && common_len > partial.length())
+            return match.substr(partial.length(), common_len - partial.length());
     }
     // If we're completing an argument for 'effect'
     else if (full_line.starts_with("effect"))
