@@ -46,6 +46,7 @@
 // Include the effect classes we'll need later
 
 #include "effects/matrix/PatternClock.h"        // No matrix dependencies
+#include "effects/matrix/PatternFlipClock.h"
 #include "effects/strip/bouncingballeffect.h"   // bouncing ball effects
 #include "effects/strip/doublepaletteeffect.h"  // double palette effect
 #include "effects/strip/fireeffect.h"           // fire effects
@@ -457,6 +458,7 @@ void LoadEffectFactories()
             Effect<PatternPinwheel>(),
             Effect<PatternSunburst>(),
             Effect<PatternClock>(),
+            Effect<PatternFlipClock>(),
             Effect<PatternAlienText>(),
             Effect<PatternBounce>(),
             Effect<PatternWave>(),
