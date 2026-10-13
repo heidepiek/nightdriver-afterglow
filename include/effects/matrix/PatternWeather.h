@@ -43,10 +43,12 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <HTTPClient.h>
 #include <map>
+#include <mutex>
 #include <thread>
 #include <UrlEncode.h>
 
@@ -160,6 +162,9 @@ class PatternWeather : public EffectWithId<PatternWeather>
     // Animation state
     uint32_t _animFrame = 0;
     int16_t  _scrollPos = 0;
+    mutable std::mutex                  _dataMutex;
+    std::atomic<bool>                   _isFetching{false};
+    std::shared_ptr<std::atomic<bool>>  _isAlive = std::make_shared<std::atomic<bool>>(true);
 
     /**
      * @brief Should this effect show its title.
@@ -243,8 +248,8 @@ class PatternWeather : public EffectWithId<PatternWeather>
         if (!HasLocationChanged())
             return false;
 
-        const String& configLocation = g_ptrSystem->GetDeviceConfig().GetLocation();
-        const String& configCountryCode = g_ptrSystem->GetDeviceConfig().GetCountryCode();
+        const String configLocation = g_ptrSystem->GetDeviceConfig().GetLocation();
+        const String configCountryCode = g_ptrSystem->GetDeviceConfig().GetCountryCode();
         const bool configLocationIsZip = g_ptrSystem->GetDeviceConfig().IsLocationZip();
 
         if (configLocationIsZip)
@@ -268,13 +273,18 @@ class PatternWeather : public EffectWithId<PatternWeather>
         deserializeJson(doc, http.getString());
         JsonObject coordinates = configLocationIsZip ? doc.as<JsonObject>() : doc[0].as<JsonObject>();
 
-        strLatitude = coordinates["lat"].as<String>();
-        strLongitude = coordinates["lon"].as<String>();
+        String lat = coordinates["lat"].as<String>();
+        String lon = coordinates["lon"].as<String>();
 
         http.end();
 
-        strLocation = configLocation;
-        strCountryCode = configCountryCode;
+        {
+            std::lock_guard<std::mutex> lock(_dataMutex);
+            strLatitude = lat;
+            strLongitude = lon;
+            strLocation = configLocation;
+            strCountryCode = configCountryCode;
+        }
 
         return true;
     }
@@ -292,8 +302,17 @@ class PatternWeather : public EffectWithId<PatternWeather>
     bool getTomorrowTemps(float& highTemp, float& lowTemp)
     {
         HTTPClient http;
+        String lat, lon, loc, country;
+        {
+            std::lock_guard<std::mutex> lock(_dataMutex);
+            lat = strLatitude;
+            lon = strLongitude;
+            loc = strLocation;
+            country = strCountryCode;
+        }
+
         String url = "http://api.openweathermap.org/data/2.5/forecast"
-            "?lat=" + strLatitude + "&lon=" + strLongitude + "&cnt=16&appid=" + urlEncode(g_ptrSystem->GetDeviceConfig().GetOpenWeatherAPIKey());
+            "?lat=" + lat + "&lon=" + lon + "&cnt=16&appid=" + urlEncode(g_ptrSystem->GetDeviceConfig().GetOpenWeatherAPIKey());
         http.begin(url);
         int httpResponseCode = http.GET();
 
@@ -315,7 +334,8 @@ class PatternWeather : public EffectWithId<PatternWeather>
             float dailyMaximum = 0.0;
             int slot = 0;
 
-            iconTomorrow = "";
+            String newIconTomorrow = "";
+            const EmbeddedFile* newIconTomorrowFile = nullptr;
 
             // Look for the temperature data for tomorrow
             for (size_t i = 0; i < list.size(); ++i)
@@ -345,21 +365,31 @@ class PatternWeather : public EffectWithId<PatternWeather>
 
                     // Use the noon slot for the icon
                     if (slot == 4)
-                        iconTomorrow = entry["weather"][0]["icon"].as<String>();
+                    {
+                        newIconTomorrow = entry["weather"][0]["icon"].as<String>();
+                        auto dictEntry = GetWeatherIcons().find(newIconTomorrow);
+                        newIconTomorrowFile = (dictEntry != GetWeatherIcons().end()) ? &dictEntry->second : nullptr;
+                    }
                 }
             }
 
             highTemp        = KelvinToLocal(dailyMaximum);
             lowTemp         = KelvinToLocal(dailyMinimum);
 
-            debugI("Got tomorrow's temps: Lo %d, Hi %d, Icon %s", (int)lowTemp, (int)highTemp, iconTomorrow.c_str());
+            {
+                std::lock_guard<std::mutex> lock(_dataMutex);
+                iconTomorrow = newIconTomorrow;
+                iconTomorrowFile = newIconTomorrowFile;
+            }
+
+            debugI("Got tomorrow's temps: Lo %d, Hi %d, Icon %s", (int)lowTemp, (int)highTemp, newIconTomorrow.c_str());
 
             http.end();
             return true;
         }
         else
         {
-            debugE("Error fetching forecast data for location: %s in country: %s", strLocation.c_str(), strCountryCode.c_str());
+            debugE("Error fetching forecast data for location: %s in country: %s", loc.c_str(), country.c_str());
             http.end();
             return false;
         }
@@ -376,38 +406,54 @@ class PatternWeather : public EffectWithId<PatternWeather>
     bool getWeatherData()
     {
         HTTPClient http;
+        String lat, lon, loc, country;
+        {
+            std::lock_guard<std::mutex> lock(_dataMutex);
+            lat = strLatitude;
+            lon = strLongitude;
+            loc = strLocation;
+            country = strCountryCode;
+        }
 
         String url = "http://api.openweathermap.org/data/2.5/weather"
-            "?lat=" + strLatitude + "&lon=" + strLongitude + "&appid=" + urlEncode(g_ptrSystem->GetDeviceConfig().GetOpenWeatherAPIKey());
+            "?lat=" + lat + "&lon=" + lon + "&appid=" + urlEncode(g_ptrSystem->GetDeviceConfig().GetOpenWeatherAPIKey());
         http.begin(url);
         int httpResponseCode = http.GET();
         if (httpResponseCode > 0)
         {
-            iconToday = "";
             auto jsonDoc = CreateJsonDocument();
             deserializeJson(jsonDoc, http.getString());
 
-            // Once we have a non-zero temp we can start displaying things
-            if (0 < jsonDoc["main"]["temp"])
-                dataReady = true;
+            float newTemp = KelvinToLocal(jsonDoc["main"]["temp"]);
+            float newHigh = KelvinToLocal(jsonDoc["main"]["temp_max"]);
+            float newLo   = KelvinToLocal(jsonDoc["main"]["temp_min"]);
 
-            temperature = KelvinToLocal(jsonDoc["main"]["temp"]);
-            highToday   = KelvinToLocal(jsonDoc["main"]["temp_max"]);
-            loToday     = KelvinToLocal(jsonDoc["main"]["temp_min"]);
-
-            iconToday = jsonDoc["weather"][0]["icon"].as<String>();
-            debugI("Got today's temps: Now %d Lo %d, Hi %d, Icon %s", (int)temperature, (int)loToday, (int)highToday, iconToday.c_str());
-
+            String newIconToday = jsonDoc["weather"][0]["icon"].as<String>();
+            auto dictEntry = GetWeatherIcons().find(newIconToday);
+            const EmbeddedFile* newIconFile = (dictEntry != GetWeatherIcons().end()) ? &dictEntry->second : nullptr;
             const char * pszName = jsonDoc["name"];
-            if (pszName)
-                strLocationName = pszName;
+
+            {
+                std::lock_guard<std::mutex> lock(_dataMutex);
+                iconToday = newIconToday;
+                iconTodayFile = newIconFile;
+                temperature = newTemp;
+                highToday   = newHigh;
+                loToday     = newLo;
+                if (0 < jsonDoc["main"]["temp"])
+                    dataReady = true;
+                if (pszName)
+                    strLocationName = pszName;
+            }
+
+            debugI("Got today's temps: Now %d Lo %d, Hi %d, Icon %s", (int)newTemp, (int)newLo, (int)newHigh, newIconToday.c_str());
 
             http.end();
             return true;
         }
         else
         {
-            debugE("Error fetching Weather data for location: %s in country: %s", strLocation.c_str(), strCountryCode.c_str());
+            debugE("Error fetching Weather data for location: %s in country: %s", loc.c_str(), country.c_str());
             http.end();
             return false;
         }
@@ -418,21 +464,89 @@ class PatternWeather : public EffectWithId<PatternWeather>
      * This drives the collection of the weather data.
      *
      */
-    void UpdateWeather()
+    void DoUpdateWeather()
     {
-        while (!nd_network::IsWiFiConnected())
+        if (!nd_network::IsWiFiConnected())
         {
-            debugW("Delaying Weather update, waiting for WiFi...");
-            vTaskDelay(pdMS_TO_TICKS(WEATHER_CHECK_WIFI_WAIT));
+            debugW("WiFi not connected, skipping Weather update.");
+            return;
         }
+
+        std::shared_ptr<std::atomic<bool>> isAlive = _isAlive;
 
         // Only try to update if we have an API Key
         if (!g_ptrSystem->GetDeviceConfig().GetOpenWeatherAPIKey().isEmpty())
         {
+            if (!*isAlive) return;
             updateCoordinates();
 
+            if (!*isAlive) return;
+            float hiTom = 0.0f;
+            float loTom = 0.0f;
             if (getWeatherData())
-                getTomorrowTemps(highTomorrow, loTomorrow);
+            {
+                if (!*isAlive) return;
+                if (getTomorrowTemps(hiTom, loTom))
+                {
+                    if (!*isAlive) return;
+                    std::lock_guard<std::mutex> lock(_dataMutex);
+                    highTomorrow = hiTom;
+                    loTomorrow   = loTom;
+                }
+            }
+        }
+    }
+
+    void UpdateWeather()
+    {
+        if (_isFetching.exchange(true))
+        {
+            debugI("Weather update already in progress, skipping.");
+            return;
+        }
+
+        debugI("Starting async update of weather...");
+
+        struct FetchParams
+        {
+            PatternWeather* self;
+            std::shared_ptr<std::atomic<bool>> isAlive;
+        };
+
+        auto params = std::make_unique<FetchParams>(FetchParams{this, _isAlive});
+
+        TaskHandle_t taskHandle = nullptr;
+        BaseType_t result = xTaskCreatePinnedToCore(
+            [](void* arg) {
+                {
+                    auto p = std::unique_ptr<FetchParams>(static_cast<FetchParams*>(arg));
+                    std::shared_ptr<std::atomic<bool>> isAlive = p->isAlive;
+                    PatternWeather* self = p->self;
+
+                    if (*isAlive)
+                    {
+                        self->DoUpdateWeather();
+                    }
+                    self->_isFetching = false;
+                }
+                vTaskDelete(NULL);
+            },
+            "WeatherFetchTask",
+            8192,
+            params.get(),
+            1, // low priority background task
+            &taskHandle,
+            1  // app core
+        );
+
+        if (result == pdPASS)
+        {
+            params.release(); // Task took ownership
+        }
+        else
+        {
+            _isFetching = false;
+            debugE("Failed to create WeatherFetchTask");
         }
     }
 
@@ -442,8 +556,9 @@ class PatternWeather : public EffectWithId<PatternWeather>
      *
      * @return bool - true if the location has changed
      */
-    bool HasLocationChanged()
+    bool HasLocationChanged() const
     {
+        std::lock_guard<std::mutex> lock(_dataMutex);
         bool locationChanged = g_ptrSystem->GetDeviceConfig().GetLocation() != strLocation;
         bool countryChanged = g_ptrSystem->GetDeviceConfig().GetCountryCode() != strCountryCode;
 
@@ -582,7 +697,12 @@ public:
      */
     ~PatternWeather()
     {
+        *_isAlive = false;
         g_ptrSystem->GetNetworkReader().CancelReader(readerIndex);
+        while (_isFetching)
+        {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
     }
 
     /**

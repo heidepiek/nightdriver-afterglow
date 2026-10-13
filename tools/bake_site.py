@@ -35,12 +35,6 @@ import sys
 import subprocess
 import shutil
 
-# Vind het juiste npm-commando, ook op Windows (npm.cmd i.p.v. npm)
-NPM = shutil.which('npm')
-if NPM is None:
-    print('Error could not find NPM executable. Please install NPM to continue. see README.md/#build-tools', file=sys.stderr)
-    exit(1)
-
 build="build"
 # Determine build command to run
 for i, arg in enumerate(sys.argv):
@@ -51,11 +45,20 @@ for i, arg in enumerate(sys.argv):
         build = build + "-offline"
 
 
+npm_cmd = shutil.which('npm') or 'npm'
+
+# Check if NPM is installed. If its not let the user know.
+try:
+    subprocess.check_call([npm_cmd, '--version'], cwd='site', stdout=subprocess.DEVNULL)
+except (subprocess.CalledProcessError, FileNotFoundError):
+    print('Error could not find NPM executable. Please install NPM to continue. see README.md/#build-tools', file=sys.stderr)
+    exit(1)
+
 # Install dependencies with NPM
-subprocess.check_call([NPM, 'install', '--save', 'false'], cwd='site', stdout=subprocess.DEVNULL)
+subprocess.check_call([npm_cmd, 'install', '--save', 'false'], cwd='site', stdout=subprocess.DEVNULL)
 
 # Build site with NPM
-subprocess.check_call([NPM, 'run', build], cwd='site')
+subprocess.check_call([npm_cmd, 'run', build], cwd='site')
 destFolder = os.path.join('site', 'dist')
 
 
