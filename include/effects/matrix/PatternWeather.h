@@ -149,6 +149,8 @@ class PatternWeather : public EffectWithId<PatternWeather>
     int    dayOfWeek          = 0;
     String iconToday          = "";
     String iconTomorrow       = "";
+    const EmbeddedFile* iconTodayFile    = nullptr;
+    const EmbeddedFile* iconTomorrowFile = nullptr;
     float  temperature        = 0.0f;
     float  highToday          = 0.0f;
     float  loToday            = 0.0f;
